@@ -1,0 +1,617 @@
+/*!
+\page page1 CMake configuration.
+
+Two ways of creating new CMake projects are presented. First, manual, where ICE and OMERO libraries are linked to the project by specifying the lib names and include directories. Second, half-automated were path to OMERO.cmake files is specified and libs and include directories are found by cmake automatically.
+
+\section section11 Manual config.
+
+\code
+cmake_minimum_required(VERSION 2.6)
+
+project(new_project)
+
+include_directories("/usr/local/include/")
+link_directories("/usr/local/lib/")
+
+add_executable(example Main.cxx)
+target_link_libraries(SimpleOMERO libomero_client.dylib libIce.dylib
+                      libIceUtil.dylib libGlacier2.dylib)
+\endcode
+
+\section section12 Half-auto conifg.
+After building OMERO server and OMERO.CPP, OMERO.CPP libs can be installed in \a /usr/local/ by running  \a make \a install. Additionally this will create a \a cmake directory in \a /usr/local/lib with \a cmake \a find files: \a omero-client-config.cmake and \a omero-ice-config.cmake. At this point OMERO.CPP libs will be automatically detected by CMake. To allow automated detection of Ice \a FindIce.cmake needs to be copied from \a openmicroscopy_github_repo/components/tools/OmeroCpp to \a /usr/local/lib/cmake.
+\code
+cmake_minimum_required(VERSION 2.6)
+
+project(examples)
+
+set(CMAKE_PREFIX_PATH "/usr/local/lib/cmake/;${CMAKE_PREFIX_PATH}")
+set(CMAKE_MODULE_PATH "/usr/local/lib/cmake/;${CMAKE_MODULE_PATH}")
+
+find_package(Ice 3.4.0 REQUIRED COMPONENTS Ice IceUtil Glacier2)
+find_package(omero-ice REQUIRED)
+find_package(omero-client REQUIRED)
+
+include_directories(${OMERO_ICE_INCLUDE_DIR}
+                    ${OMERO_CLIENT_INCLUDE_DIR} 
+                    ${Ice_INCLUDE_DIRS}
+                    ${Ice_SLICE_DIRS})
+
+add_executable(example Main.cxx)
+target_link_libraries(examples ${OMERO_CLIENT_LIBRARY}
+                               ${OMERO_ICE_LIBRARY}
+                               ${Ice_LIBRARIES})
+\endcode
+
+\page page2 Examples.
+
+To run any of the examples, beside Example 1, connection with the OMERO server needs to be established first, just like in Example 1.
+
+\section section21 Example 1 - Connect to the OMERO server.
+
+\code{.cpp}
+    // Connection Data - host, port, username, password.
+    Ice::InitializationData data;
+    data.properties = Ice::createProperties();
+    data.properties->setProperty("omero.host", "localhost");
+    data.properties->setProperty("omero.port", "4064");
+    data.properties->setProperty("omero.user", "user";
+    data.properties->setProperty("omero.pass", "pass");
+    // Connect to the server ...
+    omero::client_ptr secure_client = new omero::client(data);
+    secure_client->createSession();
+    // ... and create unenrypted connection -> epecially useful when
+    // downloading or uploading data.
+    omero::client_ptr client = secure_client->createClient(false);
+    omero::api::ServiceFactoryPrx session = client->getSession();
+    session->closeOnDestroy();
+    connected = true;
+    // Print session details.
+    omero::api::IAdminPrx admin = session->getAdminService();
+    std::cout << "--------\n";
+    std::cout << "User: " << admin->getEventContext()->userName << "\n"
+              << "Id: "   << admin->getEventContext()->userId << "\n"
+              << "Current group: " << admin->getEventContext()->groupName
+              << "\n";
+    std::cout << "---------\n";
+\endcode
+
+
+\section section22 Example 2 - List of connected user's Projects.
+
+\code
+    // We'll use container service to get info about user's Projects.
+    omero::api::IContainerPrx container_service =
+        session->getContainerService();
+    int userID = admin->getEventContext()->userId;
+    // Add user ID to paramerters list.
+    omero::sys::ParametersIPtr param = new omero::sys::ParametersI();
+    param->exp(userID);
+    param->leaves();
+    omero::sys::LongList emptyArray;
+    // Get Project list.
+    omero::api::IObjectList projects =
+        container_service->loadContainerHierarchy(
+            "Project", emptyArray, param
+        );
+    // Container service return IObjectList so we need to cast it
+    // to ProjectPtr list.
+    std::vector<omero::model::ProjectPtr> project_list =
+        omero::cast<omero::model::ProjectPtr>(projects);
+    // To print full Project tree we'll add dataset and image lists.
+    omero::model::ProjectLinkedDatasetSeq dataset_list;
+    omero::model::DatasetLinkedImageSeq image_list;
+    
+    // Loop through projects in the Project list.
+    std::cout << "Project Tree\n";
+    std::cout << ".\n"; 
+    for (int p = 0; p < project_list.size(); p++) {
+        std::cout << "|--- " 
+                  << project_list.at(p)->getName()->getValue()
+                  << " (Id: " << project_list.at(p)->getId()->getValue()
+                  << ") \n";
+        // Get Datasets linked to the given Project.
+        dataset_list = project_list.at(p)->linkedDatasetList();
+        for (int d = 0; d < dataset_list.size(); d++) {
+             std::cout << "|\t|--- "
+                       << dataset_list.at(d)->getName()->getValue()
+                       << " (Id: " << dataset_list.at(d)->getId()->getValue()
+                       << ") \n";
+            // Get Images linked to the given Dataset.
+            image_list = dataset_list.at(d)->linkedImageList();
+            for (int i = 0; i < image_list.size(); i++) {
+                std::cout << "|\t|\t|--- "
+                            << image_list.at(i)->getName()->getValue()
+                          << " (Id: " << image_list.at(i)->getId()->getValue()
+                          << ") \n";
+            }
+        }
+    }
+\endcode
+
+
+\section section23 Example 3 - List of connected user's Screens.
+
+\code
+    // We will user Container Service to get a list of the user Screens.
+    omero::api::IContainerPrx container_service =
+        session->getContainerService();
+    omero::sys::ParametersIPtr param = new omero::sys::ParametersI();
+    param->exp(admin->getEventContext()->userId);
+    param->leaves();
+    omero::sys::LongList emptyArray;
+    // Get the list.
+    omero::api::IObjectList screens =
+        container_service->loadContainerHierarchy(
+            "omero.model.Screen", emptyArray, param
+        );
+    // Cast the IObjectList to ScreenPtr.
+    std::vector<omero::model::ScreenPtr> screen_list =
+        omero::cast<omero::model::ScreenPtr>(screens);
+    // To print full Screen tree we will retrive plate and well lists.
+    omero::model::ScreenLinkedPlateSeq plate_list;
+    omero::model::PlateWellsSeq well_list;
+    
+    // We need to use Query Service to get the wells.
+    omero::model::WellIPtr well;
+    std::vector<omero::model::WellIPtr> wells;
+    omero::model::WellSamplePtr sample;
+    omero::sys::ParametersIPtr params = new omero::sys::ParametersI();
+    omero::api::IQueryPrx query_service = session->getQueryService();
+    omero::api::IObjectList query_results;
+    std::string well_query =
+        "select well from Well as well "
+        "left outer join fetch well.plate as pt "
+        "left outer join fetch well.wellSamples as ws "
+        "left outer join fetch ws.plateAcquisition as pa "
+        "left outer join fetch ws.image as img "
+        "left outer join fetch img.pixels as pix "
+        "left outer join fetch pix.pixelsType as pt "
+        "where well.plate.id = :plateID";
+    
+    // Loops through the Screen list and print info.
+    std::cout << "Screen Tree\n";
+    std::cout << ".\n"; 
+    for (int s = 0; s < screen_list.size(); s++) {
+        std::cout << "|--- " 
+                  << screen_list.at(s)->getName()->getValue()
+                  << " (Id: " << screen_list.at(s)->getId()->getValue()
+                  << ") \n";
+        // Get Plates linked to the Screen.
+        plate_list = screen_list.at(s)->linkedPlateList();
+        for (int p = 0; p < plate_list.size(); p++) {
+            std::cout << "|\t|--- "
+                       << plate_list.at(p)->getName()->getValue()
+                       << " (Id: " << plate_list.at(p)->getId()->getValue()
+                       << ")\n";
+            params = new omero::sys::ParametersI();
+            params->add("plateID", plate_list.at(p)->getId());
+            // Run query to find wells linked to the plate.
+            query_results =
+                query_service->findAllByQuery(well_query, params);
+            // Cast IObjectList to WellIPtr list
+            // and loops through the wells.
+            wells = omero::cast<omero::model::WellIPtr>(query_results);
+            for (int w = 0; w < wells.size(); w++) {
+                well = wells[w];
+                std::cout << "|\t|\t|--- Well["
+                       << well->getColumn()->getValue() << ","
+                       << well->getRow()->getValue()
+                       << "] (Id: " << well->getId()->getValue()
+                       << ")\n";
+                // Each well can contain number of fields.
+                // Loop though the fields if well contains any.
+                if (well->sizeOfWellSamples() == 0) continue;
+                sample = well->getWellSample(0);
+                for (int f = 0; f < well->sizeOfWellSamples(); f++) {
+                    sample = well->getWellSample(f);
+                    std::cout << "|\t|\t|\t|--- Field[" << f << "] "
+                    << " " << sample->getImage()->getName()->getValue()
+                    << " (Id: "
+                    << sample->getImage()->getId()->getValue()
+                    << ")\n";
+                }
+            }
+        }
+    }
+\endcode
+
+
+\section section24 Example 4 - Get Image info.
+
+\code
+    // We'll get the Image using Container Service.
+    omero::api::IContainerPrx container_service =
+        session->getContainerService();
+    omero::sys::LongList id_list;
+    id_list.push_back(image_id);
+    // Get the image list.
+    omero::api::ImageList image_list = container_service->getImages(
+        "Image", id_list, new omero::sys::ParametersI()
+    );
+    omero::model::ImagePtr image = image_list.at(0);
+    // Print the details.
+    std::cout << "  Title: " << image->getName()->getValue() << "\n";
+    std::cout << "  Description: "
+              << image->getDescription()->getValue()
+              << "\n";
+    std::cout << "  # of Channels: ";
+    std::cout << image->getPrimaryPixels()->getSizeC()->getValue()
+              << "\n";
+    std::cout << "  # of Timepoints: ";
+    std::cout << image->getPrimaryPixels()->getSizeT()->getValue()
+              << "\n";
+    std::cout << "  Size X: "
+              << image->getPrimaryPixels()->getSizeX()->getValue()
+              << " pixels; "
+              << image->getPrimaryPixels()->getPhysicalSizeX()->getValue()
+              << "\n";
+    std::cout << "  Size Y: "
+              << image->getPrimaryPixels()->getSizeY()->getValue()
+              << " pixels; "
+              << image->getPrimaryPixels()->getPhysicalSizeY()->getValue()
+              << "\n";
+    std::cout << "  Size Z: "
+              << image->getPrimaryPixels()->getSizeZ()->getValue()
+              << " pixels; "
+              << image->getPrimaryPixels()->getPhysicalSizeZ()->getValue()
+              << "\n";
+\endcode
+
+
+\section section25 Example 5 - Get image plane.
+
+\code
+    // We'll get the Image using Container Service.
+    omero::api::IContainerPrx container_service =
+        session->getContainerService();
+    omero::sys::LongList id_list;
+    id_list.push_back(image_id);
+    // Get the image list.
+    omero::api::ImageList image_list = container_service->getImages(
+        "Image", id_list, new omero::sys::ParametersI()
+    );
+    omero::model::ImagePtr image = image_list.at(0);
+    // Create Raw Pixel Store.
+    omero::api::RawPixelsStorePrx pixel_store =
+        session->createRawPixelsStore();
+    pixel_store->setPixelsId(
+        image->getPrimaryPixels()->getId()->getValue(),
+        false
+    );
+    
+    // Read a Plane to Ice::Byte buffer.
+    std::vector<Ice::Byte> image_ice_container;
+    image_ice_container = pixel_store->getPlane(60, 0, 0);
+    // Copy to unsigned char* buffer
+    // that will be passed to OpenCV image for display.
+    unsigned char *image_cast =
+        (unsigned char*) malloc (pixel_store->getPlaneSize());
+    memcpy(
+        image_cast,
+        reinterpret_cast<unsigned char *>(&image_ice_container[0]),
+        pixel_store->getPlaneSize()
+    );
+    pixel_store->save();
+    pixel_store->close();
+    image_ice_container.clear();
+\endcode
+
+
+\section section26 Example 6 - Create dataset and link it to an existing project.
+
+\code
+    omero::model::DatasetPtr dataset = new omero::model::DatasetI();
+    dataset->setName(omero::rtypes::rstring("Example Dataset Creation"));
+    dataset->setDescription(
+        omero::rtypes::rstring("Exmple Dataset Description")
+    );
+    
+    // Create link to a Project.
+    omero::model::ProjectDatasetLinkPtr link =
+        new omero::model::ProjectDatasetLinkI();
+    link->setChild(dataset);
+    link->setParent(new omero::model::ProjectI(2, false));
+    omero::model::IObjectPtr r =
+        session->getUpdateService()->saveAndReturnObject(link);
+\endcode
+
+
+\section section27 Example 7 - Create a new tag and link it to an image.
+\code
+    omero::model::TagAnnotationIPtr tag = new omero::model::TagAnnotationI();
+    tag->setTextValue(omero::rtypes::rstring("new tag"));
+    tag->setDescription(omero::rtypes::rstring("new tag description"));
+    
+    omero::model::ImageAnnotationLinkPtr link =
+        new omero::model::ImageAnnotationLinkI();
+    link->setChild(tag);
+    link->setParent(new omero::model::ImageI(image_id, false));
+    omero::model::IObjectPtr r =
+        session->getUpdateService()->saveAndReturnObject(link);
+\endcode
+
+
+\section section28 Example 8 - Attach a file to an Image.
+
+\code
+    // SHA1 the file.
+    std::string path = "/Users/emilrozbicki/Desktop/temp_plot.py";
+    std::ifstream file(path.c_str(), std::ifstream::binary);
+    file.seekg(0, file.end);
+    int file_length = file.tellg();
+    file.seekg(0, file.beg);
+    char buffer[file_length];
+    file.read(buffer, file_length);
+    unsigned char datSha[20];
+    SHA1((unsigned char *) buffer, file_length, datSha);
+    std::ostringstream os;
+    os.fill('0');
+    os << std::hex;
+    for (const unsigned char * ptr = datSha; ptr < datSha + 20; ptr++) {
+        os << std::setw(2) << (unsigned int) *ptr;
+    }
+    std::string hash = os.str();
+
+    // Create Original File.
+    omero::api::IUpdatePrx iUpdate = session->getUpdateService();
+    omero::model::OriginalFilePtr original_file =
+        new omero::model::OriginalFileI();
+    original_file->setName(omero::rtypes::rstring(path));
+    original_file->setPath(omero::rtypes::rstring(path));
+    original_file->setSize(omero::rtypes::rlong(file_length));
+    original_file->setHash(omero::rtypes::rstring(hash.c_str()));
+    original_file->setMimetype(omero::rtypes::rstring(".txt"));
+    original_file =
+        omero::model::OriginalFilePtr::dynamicCast(
+            iUpdate->saveAndReturnObject(original_file)
+        );
+    omero::api::RawFileStorePrx store = session->createRawFileStore();
+    store->setFileId(original_file->getId()->getValue());
+
+    // Upload the file.
+    std::vector<Ice::Byte> bytes;
+    bytes.resize(file_length);
+    std::copy(
+        reinterpret_cast<Ice::Byte *>(buffer),
+        reinterpret_cast<Ice::Byte *>(buffer) + file_length, bytes.begin()
+    );
+    store->write(bytes, 0, file_length);
+    original_file = store->save();
+    file.close();
+    store->close();
+
+    // Create file annotation.
+    omero::model::FileAnnotationPtr fa = new omero::model::FileAnnotationI();
+    fa->setFile(original_file);
+    fa->setDescription(omero::rtypes::rstring("test description"));
+    fa->setNs(omero::rtypes::rstring("new_name_space"));
+    fa = omero::model::FileAnnotationPtr::dynamicCast(
+        iUpdate->saveAndReturnObject(fa)
+    );
+
+    // Link the file annotation.
+    omero::model::ImagePtr image = new omero::model::ImageI(image_id, false);
+    omero::model::ImageAnnotationLinkPtr image_link =
+        new omero::model::ImageAnnotationLinkI();
+    image_link->setChild(fa);
+    image_link->setParent(image);
+    image_link = omero::model::ImageAnnotationLinkPtr::dynamicCast(
+        iUpdate->saveAndReturnObject(image_link)
+    );
+\endcode
+
+
+\section section29 Example 9 - Read a file attached to an image.
+
+\code
+    std::string name_space = "new_name_space";
+    // Find File Annotation for the current user, 
+    int user_id = admin->getEventContext()->userId;
+    omero::api::StringSet include;
+    std::ostringstream convert;
+    include.push_back(name_space.c_str());
+    omero::api::StringSet exclude;
+    
+    omero::api::IMetadataPrx proxy = session->getMetadataService();
+    omero::sys::ParametersIPtr param = new omero::sys::ParametersI();
+    param->exp(user_id);
+    omero::model::ImagePtr image = new omero::model::ImageI(image_id);
+    
+    omero::api::AnnotationList annotations = proxy->loadSpecifiedAnnotations(
+            "ome.model.annotations.FileAnnotation", include, exclude, param
+    );
+    
+    if (annotations.size() == 0) {
+        std::cout << "No files found\n";
+        return;
+    }
+    std::cout << "Found " << annotations.size() << " files.\n";
+    omero::api::RawFileStorePrx store = session->createRawFileStore();
+    omero::model::FileAnnotationPtr fa =
+        omero::model::FileAnnotationIPtr::dynamicCast(annotations.at(0));
+    omero::model::OriginalFilePtr original_file = fa->getFile();
+    store->setFileId(original_file->getId()->getValue());
+    long file_size = original_file->getSize()->getValue();
+    char* buffer = (char*) malloc(file_size);
+    std::ifstream file;
+    std::vector<Ice::Byte> bytes;
+    bytes.resize(file_size);
+    bytes = store->read(0, file_size);
+    memcpy(buffer,
+        reinterpret_cast<unsigned char *>(&bytes[0]),
+        file_size
+    );
+    std::istringstream iss(std::string(buffer, file_size));
+    std::string line;
+    std::istringstream ss(line);
+    std::istream_iterator<std::string> begin(ss), end;
+    std::cout << "\nPrinting out "
+              << original_file->getName()->getValue() << "\n";
+    while(getline(iss, line)){
+        std::cout << "\t" << line << "\n";
+    }
+\endcode
+
+
+\section section210 Example 10 - Create a ROI.
+
+\code
+    // Get Image
+    omero::api::IContainerPrx container_service =
+        session->getContainerService();
+    omero::sys::LongList id_list;
+    id_list.push_back(image_id);
+    // Get the image list.
+    omero::api::ImageList image_list = container_service->getImages(
+        "Image", id_list, new omero::sys::ParametersI()
+    );
+    omero::model::ImagePtr image = image_list.at(0);
+    
+    // Create and link ROI
+    omero::model::RoiPtr roi = new omero::model::RoiI();
+    roi->setImage(image);
+    // Add shape
+    omero::model::RectPtr rect = new omero::model::RectI();
+    rect->setX(
+        omero::rtypes::rdouble(0.25 * image->getPrimaryPixels()->getSizeX()->getValue())
+    );
+    rect->setY(
+        omero::rtypes::rdouble(0.25 * image->getPrimaryPixels()->getSizeY()->getValue())
+    );
+    rect->setWidth(
+        omero::rtypes::rdouble(0.5 * image->getPrimaryPixels()->getSizeX()->getValue())
+    );
+    rect->setHeight(
+        omero::rtypes::rdouble(0.5 * image->getPrimaryPixels()->getSizeY()->getValue())
+    );
+    rect->setTheZ(omero::rtypes::rint(60));
+    rect->setTheT(omero::rtypes::rint(0));
+    rect->setFillColor(omero::rtypes::rint(2113863680));
+    rect->setStrokeColor(omero::rtypes::rint(2113863680));
+    rect->setTextValue(omero::rtypes::rstring("NEW ROI"));
+    roi->addShape(rect);
+    
+    roi = omero::model::RoiPtr::dynamicCast(
+        session->getUpdateService()->saveAndReturnObject(roi)
+    );
+\endcode
+
+
+\section section211 Example 11 - Create new Image.
+
+\code
+// Read existing image and copy a single plane to the new image.
+    omero::api::IContainerPrx container_service =
+        session->getContainerService();
+    omero::sys::LongList id_list;
+    id_list.push_back(image_id);
+    // Get the image list.
+    omero::api::ImageList image_list = container_service->getImages(
+        "Image", id_list, new omero::sys::ParametersI()
+    );
+    omero::model::ImagePtr image = image_list.at(0);
+    // Create Raw Pixel Store.
+    omero::api::RawPixelsStorePrx pixel_store =
+        session->createRawPixelsStore();
+    pixel_store->setPixelsId(
+        image->getPrimaryPixels()->getId()->getValue(),
+        false
+    );
+    // Read a Plane to Ice::Byte buffer.
+    std::vector<Ice::Byte> image_ice_container;
+    image_ice_container = pixel_store->getPlane(60, 0, 0);
+    // Copy to unsigned char* buffer
+    // that will be passed to OpenCV image for display.
+    unsigned char *image_cast =
+        (unsigned char*) malloc (pixel_store->getPlaneSize());
+    memcpy(
+        image_cast,
+        reinterpret_cast<unsigned char *>(&image_ice_container[0]),
+        pixel_store->getPlaneSize()
+    );
+    pixel_store->save();
+    pixel_store->close();
+    image_ice_container.clear();
+    
+    
+    // Create new image.
+    int width = image->getPrimaryPixels()->getSizeX()->getValue();
+    int height = image->getPrimaryPixels()->getSizeY()->getValue();
+    int depth = 1;
+    int number_of_timepoints = 1;
+    int number_of_channels = 1;
+    std::string name = "New Image";
+    std::string description = "New Image description";
+    omero::model::PixelsTypePtr pixel_type =
+        image->getPrimaryPixels()->getPixelsType();
+    
+    omero::sys::IntList list;
+    for (int i = 0; i < number_of_channels; i++) {
+        list.push_back(i);
+    }
+    
+    omero::api::IPixelsPrx pixel_service = session->getPixelsService();
+    omero::RLongPtr new_id = pixel_service->createImage(
+        width, height, depth, number_of_timepoints,
+        list, pixel_type, name, description
+    );
+    
+    std::cout << "New Image ID: " << new_id->getValue() << "\n";
+    
+    // Link image to dataset.
+    omero::sys::LongList dataset_list;
+    dataset_list.push_back(dataset_id);
+    omero::api::IObjectList datasets =
+        container_service->loadContainerHierarchy(
+            "Dataset", dataset_list, new omero::sys::ParametersI()
+    );
+    std::vector<omero::model::DatasetPtr> dataset =
+        omero::cast<omero::model::DatasetPtr>(datasets);
+    id_list.clear();
+    id_list.push_back(new_id->getValue());
+    omero::api::ImageList new_image =
+        container_service->getImages(
+            "Image", id_list, new omero::sys::ParametersI()
+    );
+    omero::model::DatasetImageLinkIPtr link =
+        new omero::model::DatasetImageLinkI();
+    omero::model::ImagePtr new_image_pointer = new_image.at(0);
+    link->setParent(dataset.at(0));
+    link->setChild(new_image_pointer);
+    session->getUpdateService()->saveAndReturnObject(link);
+    
+    new_image_pointer->getPrimaryPixels()->setPhysicalSizeX(
+        image->getPrimaryPixels()->getPhysicalSizeX());
+    new_image_pointer->getPrimaryPixels()->setPhysicalSizeY(
+        image->getPrimaryPixels()->getPhysicalSizeY());
+    new_image_pointer->getPrimaryPixels()->setPhysicalSizeY(0);
+    new_image_pointer = omero::model::ImageIPtr::dynamicCast(
+        session->getUpdateService()->saveAndReturnObject(new_image_pointer)
+    );
+    std::cout << "Created new image: "
+              << new_image_pointer->getName()->getValue()
+              << " ID: "
+              << new_image_pointer->getId()->getValue()
+              << "\n";
+    // Write plane to the created image.
+    omero::api::RawPixelsStorePrx new_pixel_store =
+        session->createRawPixelsStore();
+    new_pixel_store->setPixelsId(
+        new_image_pointer->getPrimaryPixels()->getId()->getValue(),
+        false
+    );
+    
+    int size = width * height;
+    std::vector<Ice::Byte> bytes;
+    bytes.resize(size);
+    std::copy(
+        reinterpret_cast<Ice::Byte *>(image_cast),
+        reinterpret_cast<Ice::Byte *>(image_cast) + size,
+        bytes.begin()
+    );
+    new_pixel_store->setPlane(bytes, 0, 0, 0);
+    new_pixel_store->save();
+    new_pixel_store->close();
+\endcode
+*/
