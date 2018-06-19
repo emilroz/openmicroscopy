@@ -323,6 +323,9 @@ class ValueResolver(object):
     def get_plate_name_by_id(self, plate):
         return self.wrapper.get_plate_name_by_id(plate)
 
+    def get_plate_id_by_name(self, plate_name):
+        return self.wrapper.get_plate_id_by_name(plate_name)
+
     def get_well_name(self, well_id, plate=None):
         well = self.wrapper.get_well_by_id(well_id, plate)
         row = well.row.val
@@ -408,9 +411,15 @@ class ValueResolver(object):
         if StringColumn is column_class:
             return value
         if LongColumn is column_class:
-            return long(value)
+            try:
+                return long(value)
+            except Exception:
+                return 0
         if DoubleColumn is column_class:
-            return float(value)
+            try:
+                return float(value)
+            except Exception:
+                return 0.0
         if BoolColumn is column_class:
             return value.lower() in BOOLEAN_TRUE
         raise MetadataError('Unsupported column class: %s' % column_class)
@@ -494,10 +503,13 @@ class SPWWrapper(ValueWrapper):
         raise Exception("to be implemented by subclasses")
 
     def get_image_name_by_id(self, iid, pid=None):
+        log.info("%s:%s:%r" % (iid, pid, self.images_by_id.keys()))
+        '''
         if not pid and len(self.images_by_id):
             pid = self.images_by_id.keys()[0]
         else:
             raise Exception("Cannot resolve image to plate")
+        '''
         return self.images_by_id[pid][iid].name.val
 
     def parse_plate(self, plate, wells_by_location, wells_by_id, images_by_id):
@@ -525,6 +537,7 @@ class SPWWrapper(ValueWrapper):
             log.debug('%s: %r' % (row, wells_by_location[row].keys()))
 
     def resolve_well(self, column, row, value):
+            log.debug("Resolving column:%r, row:%r, value:%r" % (column, row, value))
             m = self.WELL_REGEX.match(value)
             if m is None or len(m.groups()) != 2:
                 msg = 'Cannot parse well identifier "%s" from row: %r'
@@ -532,6 +545,7 @@ class SPWWrapper(ValueWrapper):
                 raise MetadataError(msg)
             plate_row = m.group(1).lower()
             plate_column = str(long(m.group(2)))
+            log.debug("Populating roi:%r column:%r" % (plate_row, plate_column))
             wells_by_location = None
             if len(self.wells_by_location) == 1:
                 wells_by_location = self.wells_by_location.values()[0]
@@ -541,6 +555,12 @@ class SPWWrapper(ValueWrapper):
             else:
                 for column, plate in row:
                     if column.__class__ is PlateColumn:
+                        wells_by_location = self.wells_by_location[plate]
+                        log.debug(
+                            'Parsed "%s" row: %s column: %s plate: %s' % (
+                                value, plate_row, plate_column, plate))
+                        break
+                    if column.name == "Plate Name":
                         wells_by_location = self.wells_by_location[plate]
                         log.debug(
                             'Parsed "%s" row: %s column: %s plate: %s' % (
@@ -567,6 +587,10 @@ class ScreenWrapper(SPWWrapper):
     def get_plate_name_by_id(self, plate):
         plate = self.plates_by_id[plate]
         return plate.name.val
+
+    def get_plate_id_by_name(self, plate_name):
+        plate = self.plates_by_name[plate_name]
+        return plate.id.val
 
     def get_well_by_id(self, well_id, plate=None):
         wells = self.wells_by_id[plate]
@@ -614,7 +638,7 @@ class ScreenWrapper(SPWWrapper):
             wells_by_location = dict()
             wells_by_id = dict()
             self.wells_by_location[plate.name.val] = wells_by_location
-            self.wells_by_id[plate.id.val] = wells_by_id
+            self.wells_by_id[plate.name.val] = wells_by_id
             self.parse_plate(
                 plate, wells_by_location, wells_by_id, images_by_id
             )
@@ -624,6 +648,7 @@ class PlateWrapper(SPWWrapper):
 
     def __init__(self, value_resolver):
         super(PlateWrapper, self).__init__(value_resolver)
+        self.value_resolver = value_resolver
         self._load()
 
     def get_well_by_id(self, well_id, plate=None):
@@ -636,13 +661,14 @@ class PlateWrapper(SPWWrapper):
         If we're processing a plate but the bulk-annotations file contains
         a plate column then select rows for this plate only
         """
+        print self.value_resolver.target_object
         for i, name in enumerate(names):
             if name.lower() == 'plate':
                 valuerows = [row for row in rows if row[i] ==
-                             self.value_resolver.target_name]
+                             self.value_resolver.target_object.name]
                 log.debug(
                     'Selected %d/%d rows for plate "%s"', len(valuerows),
-                    len(rows), self.value_resolver.target_name)
+                    len(rows), self.value_resolver.target_object.name)
                 return valuerows
         return rows
 
@@ -888,7 +914,8 @@ class ParsingContext(object):
             self.target_object, rows[header_index],
             column_types=self.column_types)
         self.columns = self.header_resolver.create_columns()
-        log.debug('Columns: %r' % self.columns)
+        for column in self.columns:
+            log.debug('Column: %r' % column)
 
         valuerows = rows[rows_index:]
         log.debug('Got %d rows', len(valuerows))
@@ -983,7 +1010,7 @@ class ParsingContext(object):
                     resolve_image_names = True
                     log.debug("Resolving Image Ids")
 
-        log.debug("Column by name:%r" % columns_by_name)
+        log.debug("Columns by name:%r" % columns_by_name)
         if well_name_column is None and plate_name_column is None \
                 and image_name_column is None:
             log.info('Nothing to do during post processing.')
@@ -997,8 +1024,8 @@ class ParsingContext(object):
                 try:
                     well_id = well_column.values[i]
                     plate = None
-                    if "plate" in columns_by_name:  # FIXME
-                        plate = columns_by_name["plate"].values[i]
+                    if "plate name" in columns_by_name:  # FIXME
+                        plate = columns_by_name["plate name"].values[i]
                     v = self.value_resolver.get_well_name(well_id, plate)
                 except KeyError:
                     log.warn(
@@ -1066,21 +1093,25 @@ class ParsingContext(object):
                 pid = None
                 if 'plate' in columns_by_name:
                     pid = columns_by_name['plate'].values[i]
-                iname = self.value_resolver.get_image_name_by_id(iid, pid)
+                iname = self.value_resolver.get_image_name_by_id(
+                    iid, self.target_object.id.val)
                 image_name_column.values.append(iname)
                 image_name_column.size = max(
                     image_name_column.size, len(iname)
                 )
             else:
                 log.info('Missing image name column, skipping.')
-
+            '''
             if plate_name_column is not None:
-                plate = columns_by_name['plate'].values[i]   # FIXME
-                v = self.value_resolver.get_plate_name_by_id(plate)
+                plate_name = columns_by_name['plate name'].values[i]   # FIXME
+                v = self.value_resolver.get_plate_id_by_name(plate_name)
                 plate_name_column.size = max(plate_name_column.size, len(v))
                 plate_name_column.values.append(v)
             else:
                 log.info('Missing plate name column, skipping.')
+            '''
+        log.debug("Columns by name:%r" % columns_by_name)
+
 
     def write_to_omero(self, batch_size=1000, loops=10, ms=500):
         sf = self.client.getSession()
